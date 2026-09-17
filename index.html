@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
+    <title>Donald cracktro</title>
+    <link rel="icon" href="data:,">
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+        }
+
+        body {
+
+            height: 100dvh;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+
+            object-fit: contain;
+            object-position: center;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="cracktro" width="720" height="544" role="img"
+            aria-label="Donald Duck cracktro with animated PAL raster effect">
+        Your browser needs Canvas and JavaScript support to display the intro.
+    </canvas>
+    <script>
+
+(() => {
+    "use strict";
+
+    const DEFAULT_START_COLOR = 2;
+    const DEFAULT_START_PHASE = 7;
+
+    const TEXT_ROWS = Object.freeze([
+        "* A B C *",
+        "CRACKINGS",
+        "PRESENTS:",
+        "---------",
+        " DONALD  ",
+        "  DUCK   ",
+    ]);
+
+    const BLOCK_TABLE = Object.freeze([
+        0x20, 0xBC, 0xBE, 0xE2, 0xAC, 0xE1, 0xBF, 0xFB,
+        0xBB, 0xFF, 0xA1, 0xEC, 0xA2, 0xFE, 0xFC, 0x60,
+    ]);
+
+    const CHARACTER_BITMAPS = Object.freeze({
+        " ": "00 00 00 00 00 00 00 00",
+        "'": "06 0C 18 00 00 00 00 00",
+        "*": "00 66 3C FF 3C 66 00 00",
+        "-": "00 00 00 7E 00 00 00 00",
+        ":": "00 00 18 00 00 18 00 00",
+        "A": "18 3C 66 7E 66 66 66 00",
+        "B": "7C 66 66 7C 66 66 7C 00",
+        "C": "3C 66 60 60 60 66 3C 00",
+        "D": "78 6C 66 66 66 6C 78 00",
+        "E": "7E 60 60 78 60 60 7E 00",
+        "F": "7E 60 60 78 60 60 60 00",
+        "G": "3C 66 60 6E 66 66 3C 00",
+        "H": "66 66 66 7E 66 66 66 00",
+        "I": "3C 18 18 18 18 18 3C 00",
+        "K": "66 6C 78 70 78 6C 66 00",
+        "L": "60 60 60 60 60 60 7E 00",
+        "N": "66 76 7E 7E 6E 66 66 00",
+        "O": "3C 66 66 66 66 66 3C 00",
+        "P": "7C 66 66 7C 60 60 60 00",
+        "R": "7C 66 66 7C 78 6C 66 00",
+        "S": "3C 66 60 3C 06 66 3C 00",
+        "T": "7E 18 18 18 18 18 18 00",
+        "U": "66 66 66 66 66 66 3C 00",
+    });
+
+    const CYCLES_PER_LINE = 63;
+    const RASTER_LINES = 312;
+    const PIXELS_PER_CYCLE = 8;
+    const CYCLES_PER_FRAME = CYCLES_PER_LINE * RASTER_LINES;
+    const PIXELS_PER_RASTER_LINE = CYCLES_PER_LINE * PIXELS_PER_CYCLE;
+    const TIMESTEPS_PER_FRAME = CYCLES_PER_FRAME * PIXELS_PER_CYCLE;
+    const PAL_FPS = 985248 / CYCLES_PER_FRAME;
+
+    const WIDTH = 384;
+    const HEIGHT = 272;
+    const SCREEN_X = 32;
+    const SCREEN_Y = 36;
+    const SCREEN_WIDTH = 320;
+    const SCREEN_HEIGHT = 200;
+    const FIRST_VISIBLE_LINE = 15;
+    const FIRST_VISIBLE_PIXEL = 104;
+    const COLOR_WRITE_PHASE = 4;
+
+    const PETSCII_QUADRANTS = Object.freeze({
+        0x20: 0b0000,
+        0xBC: 0b0001,
+        0xBE: 0b0010,
+        0xA2: 0b1100,
+        0xAC: 0b0100,
+        0xA1: 0b1010,
+        0xBF: 0b0110,
+        0xBB: 0b1000,
+    });
+
+    function integerInRange(value, min, max, name) {
+        if (!Number.isInteger(value) || value < min || value > max) {
+            throw new RangeError(`${name} must be an integer between ${min} and ${max}.`);
+        }
+    }
+
+    function getCharacter(character) {
+        if (typeof character !== "string" || character.length !== 1 ||
+            character.charCodeAt(0) < 0x20 || character.charCodeAt(0) > 0x5F || character === "@") {
+            throw new Error(`Character ${JSON.stringify(character)} is not supported. Use uppercase letters.`);
+        }
+        if (!Object.prototype.hasOwnProperty.call(CHARACTER_BITMAPS, character)) {
+            throw new Error(`Missing bitmap for ${JSON.stringify(character)}. See CHARACTER_BITMAPS.`);
+        }
+        return Uint8Array.from(CHARACTER_BITMAPS[character].split(" "), (v) => parseInt(v, 16));
+    }
+
+    function expandCharacter(pixelRows) {
+        if (!pixelRows || pixelRows.length !== 8 ||
+            Array.from(pixelRows).some((v) => !Number.isInteger(v) || v < 0 || v > 255)) {
+            throw new Error("A small character must contain eight bytes.");
+        }
+        const block = [];
+        for (let row = 0; row < 8; row += 2) {
+            const upper = pixelRows[row];
+            const lower = pixelRows[row + 1];
+            for (let column = 0; column < 8; column += 2) {
+                const shift = 6 - column;
+                const upperTwo = (upper >> shift) & 0b11;
+                const lowerTwo = (lower >> shift) & 0b11;
+                block.push((lowerTwo << 2) | upperTwo);
+            }
+        }
+        return block;
+    }
+
+    function blockPixelRows(index) {
+        integerInRange(index, 0, 15, "Block index");
+        const tableValue = BLOCK_TABLE[index];
+        const petscii = tableValue & 0xBF;
+        let quadrants = PETSCII_QUADRANTS[petscii];
+        if (tableValue & 0x40) {
+            quadrants ^= 0x0F;
+        }
+        const upper = ((quadrants & 2) ? 0xF0 : 0) | ((quadrants & 1) ? 0x0F : 0);
+        const lower = ((quadrants & 8) ? 0xF0 : 0) | ((quadrants & 4) ? 0x0F : 0);
+        return Uint8Array.of(upper, upper, upper, upper, lower, lower, lower, lower);
+    }
+
+    function buildTextMask(textRows = TEXT_ROWS) {
+        if (!Array.isArray(textRows) || textRows.length !== 6 ||
+            textRows.some((row) => typeof row !== "string" || row.length !== 9)) {
+            throw new Error("TEXT_ROWS must contain six rows with nine characters each.");
+        }
+        const mask = new Uint8Array(SCREEN_WIDTH * SCREEN_HEIGHT);
+        textRows.forEach((text, largeRow) => {
+            Array.from(text).forEach((character, largeColumn) => {
+                const block = expandCharacter(getCharacter(character));
+                block.forEach((index, number) => {
+                    const x0 = 16 + largeColumn * 32 + (number % 4) * 8;
+                    const y0 = largeRow * 32 + Math.floor(number / 4) * 8;
+                    const rows = blockPixelRows(index);
+                    for (let dy = 0; dy < 8; dy += 1) {
+                        for (let dx = 0; dx < 8; dx += 1) {
+                            mask[(y0 + dy) * SCREEN_WIDTH + x0 + dx] = (rows[dy] >> (7 - dx)) & 1;
+                        }
+                    }
+                });
+            });
+        });
+        return mask;
+    }
+
+    function blackRuns(mask) {
+        const result = [];
+        for (let y = 0; y < SCREEN_HEIGHT; y += 1) {
+            const runs = [];
+            let x = 0;
+            while (x < SCREEN_WIDTH) {
+                if (!mask[y * SCREEN_WIDTH + x]) {
+                    x += 1;
+                    continue;
+                }
+                const start = x;
+                while (x < SCREEN_WIDTH && mask[y * SCREEN_WIDTH + x]) {
+                    x += 1;
+                }
+                runs.push([start, x]);
+            }
+            result.push(runs);
+        }
+        return result;
+    }
+
+    class RasterEffect {
+        constructor(startColor = DEFAULT_START_COLOR, startPhase = DEFAULT_START_PHASE) {
+            integerInRange(startColor, 0, 15, "Start color");
+            integerInRange(startPhase, 0, 62, "Start phase");
+            this.startColor = startColor;
+            this.startPhase = startPhase;
+            this.time = startPhase;
+            this.border = 0;
+            this.background = startColor;
+            this.x = 0;
+            this.y = 9;
+            this.loops = 0;
+            this.baseChanges = 0;
+            this.frameNumber = 0;
+            this._displayBorder = 0;
+            this._displayBackground = startColor;
+            this._events = this._runOriginalLoop();
+            this._nextEvent = this._events.next().value;
+
+            this._borderFrame = new Uint8Array(TIMESTEPS_PER_FRAME);
+            this._backgroundFrame = new Uint8Array(TIMESTEPS_PER_FRAME);
+        }
+
+        _readCycles(count) {
+            let t = this.time;
+            for (let i = 0; i < count; i += 1) {
+                const row = Math.floor(t / CYCLES_PER_LINE) % RASTER_LINES;
+                const phase = t % CYCLES_PER_LINE;
+
+                if (row >= 0x30 && row <= 0xF7 && row % 8 === 3 && phase >= 11 && phase < 54) {
+                    t += 54 - phase;
+                }
+                t += 1;
+            }
+            this.time = t;
+        }
+
+        _readRaster() {
+            this._readCycles(4);
+            return (Math.floor((this.time - 1) / CYCLES_PER_LINE) % RASTER_LINES) & 0xFF;
+        }
+
+        _changeColor(register, step) {
+
+            this._readCycles(4);
+            this.time += 1;
+            if (register === "background") {
+                this.background = (this.background + step) & 0x0F;
+            } else {
+                this.border = (this.border + step) & 0x0F;
+            }
+            const when = this.time * PIXELS_PER_CYCLE + COLOR_WRITE_PHASE;
+            this.time += 1;
+            return [when, this.border, this.background];
+        }
+
+        *_runOriginalLoop() {
+
+            while (true) {
+                this._readCycles(2);
+                const same = this._readRaster() === 0x33;
+                this._readCycles(2);
+                this._readCycles(same ? 2 : 3);
+                if (same) {
+                    break;
+                }
+            }
+
+            this._readCycles(3);
+            this._readCycles(3);
+            const when = this.time * PIXELS_PER_CYCLE + COLOR_WRITE_PHASE;
+            this.time += 1;
+            yield [when, this.border, this.background];
+            this._readCycles(2);
+
+            const operations = [
+                ["background", 1],
+                ["border", 1],
+                ["background", 1],
+                ["background", -1],
+                ["border", -1],
+            ];
+            while (true) {
+
+                const oldRow = this._readRaster();
+                while (true) {
+                    const same = this._readRaster() === oldRow;
+                    this._readCycles(same ? 3 : 2);
+                    if (!same) {
+                        break;
+                    }
+                }
+                for (const [register, step] of operations) {
+                    yield this._changeColor(register, step);
+                    this._readCycles(4);
+                }
+                yield this._changeColor("background", -1);
+
+                this._readCycles(4 + 2 + 3);
+                this.loops += 1;
+
+                this._readCycles(2);
+                this.y = (this.y + 1) & 0xFF;
+                if (this.y !== 0) {
+                    this._readCycles(3);
+                    continue;
+                }
+                this._readCycles(2);
+                this._readCycles(2);
+                this.x = (this.x + 1) & 0xFF;
+                if (this.x !== 0) {
+                    this._readCycles(3);
+                    continue;
+                }
+                this._readCycles(2);
+
+                this.baseChanges += 1;
+                yield this._changeColor("background", 1);
+                yield this._changeColor("border", 1);
+                this._readCycles(3);
+            }
+        }
+
+        nextFrame() {
+            const start = this.frameNumber * TIMESTEPS_PER_FRAME;
+            const end = start + TIMESTEPS_PER_FRAME;
+            let position = 0;
+            while (this._nextEvent[0] < end) {
+                const [when, newBorder, newBackground] = this._nextEvent;
+                const stop = Math.max(0, when - start);
+                if (stop > position) {
+                    this._borderFrame.fill(this._displayBorder, position, stop);
+                    this._backgroundFrame.fill(this._displayBackground, position, stop);
+                }
+                position = stop;
+                this._displayBorder = newBorder;
+                this._displayBackground = newBackground;
+                this._nextEvent = this._events.next().value;
+            }
+            this._borderFrame.fill(this._displayBorder, position);
+            this._backgroundFrame.fill(this._displayBackground, position);
+            this.frameNumber += 1;
+            return [this._borderFrame, this._backgroundFrame];
+        }
+    }
+
+    class Cracktro {
+        constructor(startColor = DEFAULT_START_COLOR, startPhase = DEFAULT_START_PHASE,
+                    textRows = TEXT_ROWS) {
+            this.startColor = startColor;
+            this.mask = buildTextMask(textRows);
+            this.runs = blackRuns(this.mask);
+            this.raster = new RasterEffect(startColor, startPhase);
+            this.latest = new Uint8Array(WIDTH * HEIGHT);
+        }
+
+        _overlayText(bild) {
+            this.runs.forEach((radspann, y) => {
+                const bas = (SCREEN_Y + y) * WIDTH + SCREEN_X;
+                for (const [x1, x2] of radspann) {
+                    bild.fill(0, bas + x1, bas + x2);
+                }
+            });
+        }
+
+        nextFrame() {
+            const [border, background] = this.raster.nextFrame();
+            const bild = this.latest;
+            for (let y = 0; y < HEIGHT; y += 1) {
+                const rasterrad = FIRST_VISIBLE_LINE + y;
+                const sourceStart = rasterrad * PIXELS_PER_RASTER_LINE + FIRST_VISIBLE_PIXEL;
+                const destStart = y * WIDTH;
+                bild.set(border.subarray(sourceStart, sourceStart + WIDTH), destStart);
+                if (y >= SCREEN_Y && y < SCREEN_Y + SCREEN_HEIGHT) {
+                    const a = destStart + SCREEN_X;
+                    const b = sourceStart + SCREEN_X;
+                    bild.set(background.subarray(b, b + SCREEN_WIDTH), a);
+                }
+            }
+            this._overlayText(bild);
+            return bild;
+        }
+    }
+
+    const PAL_LUMA = [0, 256, 74, 163, 92, 117, 56, 199, 92, 56, 117, 74, 117, 199, 117, 163];
+    const PAL_ANGLE = [0, 0, 112.5, 292.5, 67.5, 247.5, 0, 180, 135, 157.5, 112.5, 0, 0, 247.5, 0, 0];
+    const PAL_GRAY = new Set([0, 1, 11, 12, 15]);
+    const PAL_SATURATION = 1.25;
+    const PAL_CONTRAST = 1.15;
+    const PAL_GAMMA = 0.785714;
+    const PAL_PHASE = -4.5;
+    const PAL_LINE_PHASE_DELTA = -20.0;
+    const PAL_PIXEL_WIDTH = 15 / 16;
+
+    function roundLikePython(value) {
+        const bas = Math.floor(value);
+        const rest = value - bas;
+        if (rest === 0.5) {
+            return bas % 2 === 0 ? bas : bas + 1;
+        }
+        return rest < 0.5 ? bas : bas + 1;
+    }
+
+    const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 4;
+    function packRgba(r, g, b) {
+        return (LITTLE_ENDIAN ? (r | (g << 8) | (b << 16) | (255 << 24)) :
+            ((r << 24) | (g << 16) | (b << 8) | 255)) >>> 0;
+    }
+
+    class PalDisplay {
+        constructor() {
+            const signal = [];
+            for (let parity = 0; parity < 2; parity += 1) {
+                const phase = PAL_PHASE + parity * PAL_LINE_PHASE_DELTA;
+                const row = [];
+                for (let number = 0; number < 16; number += 1) {
+                    const angle = (PAL_ANGLE[number] + phase) * (Math.PI / 180);
+                    const amplitud = PAL_GRAY.has(number) ? 0 : 48 * PAL_SATURATION;
+                    const cb = amplitud * Math.cos(angle) / 0.493111;
+                    const cr = amplitud * Math.sin(angle) / 0.877283;
+                    row.push([PAL_LUMA[number] * 255 / 256, cb, cr]);
+                }
+                signal.push(row);
+            }
+            this.tables = [];
+            for (let parity = 0; parity < 2; parity += 1) {
+                const table = [];
+                for (let previous = 0; previous < 16; previous += 1) {
+                    for (let current = 0; current < 16; current += 1) {
+                        const [luma, cb0, cr0] = signal[parity][current];
+                        const [, gammal_cb, gammal_cr] = signal[1 - parity][previous];
+                        const cb = (cb0 + gammal_cb) / 2;
+                        const cr = (cr0 + gammal_cr) / 2;
+                        table.push([luma + cr, luma - (50 * cb + 130 * cr) / 256, luma + cb]);
+                    }
+                }
+                this.tables.push(table);
+            }
+            this._result = null;
+        }
+
+        _rowSignal(row, previous, parity) {
+
+            const table = this.tables[parity];
+            const result = [];
+            let sista = (previous[0] << 4) | row[0];
+            for (let x = 1; x < WIDTH; x += 1) {
+                const kod = (previous[x] << 4) | row[x];
+                if (kod !== sista) {
+                    result.push([x, ...table[sista]]);
+                    sista = kod;
+                }
+            }
+            result.push([WIDTH, ...table[sista]]);
+            return result;
+        }
+
+        _rgb(red, green, blue, dim = 1) {
+            const kanal = (v) => Math.min(255, Math.max(0,
+                Math.trunc(255 * Math.pow(Math.max(0, v * PAL_CONTRAST) / 255, PAL_GAMMA) * dim)));
+            return packRgba(kanal(red), kanal(green), kanal(blue));
+        }
+
+        _betweenRow(a, b, fraction) {
+            const result = [];
+            let i = 0;
+            let j = 0;
+            while (i < a.length && j < b.length) {
+                const end = Math.min(a[i][0], b[j][0]);
+                result.push([
+                    end,
+                    (1 - fraction) * a[i][1] + fraction * b[j][1],
+                    (1 - fraction) * a[i][2] + fraction * b[j][2],
+                    (1 - fraction) * a[i][3] + fraction * b[j][3],
+                ]);
+                if (a[i][0] === end) { i += 1; }
+                if (b[j][0] === end) { j += 1; }
+            }
+            return result;
+        }
+
+        _drawRow(runs, width, dim, target, offset) {
+            let start = 0;
+            for (const [end, r, g, b] of runs) {
+                const stop = roundLikePython(end * width / WIDTH);
+                target.fill(this._rgb(r, g, b, dim), offset + start, offset + stop);
+                start = stop;
+            }
+
+            for (let i = 0; i < runs.length - 1; i += 1) {
+                const a = runs[i];
+                const b = runs[i + 1];
+                const border = roundLikePython(a[0] * width / WIDTH);
+                for (let sida = 0; sida < 2; sida += 1) {
+                    const x = border - 1 + sida;
+                    const fraction = sida === 0 ? 0.25 : 0.75;
+                    if (x >= 0 && x < width) {
+                        target[offset + x] = this._rgb(
+                            (1 - fraction) * a[1] + fraction * b[1],
+                            (1 - fraction) * a[2] + fraction * b[2],
+                            (1 - fraction) * a[3] + fraction * b[3], dim);
+                    }
+                }
+            }
+        }
+
+        render(index) {
+            if (!(index instanceof Uint8Array) || index.length !== WIDTH * HEIGHT) {
+                throw new Error("Wrong image size for the PAL display.");
+            }
+            const scale = 2;
+            const width = roundLikePython(WIDTH * scale * PAL_PIXEL_WIDTH);
+            const height = HEIGHT * scale;
+            if (!this._result || this._result.width !== width || this._result.height !== height) {
+                const rgba = new Uint8ClampedArray(width * height * 4);
+                this._result = { rgba, width, height, packed: new Uint32Array(rgba.buffer) };
+            }
+            const target = this._result.packed;
+            const signalRows = [];
+            let previous = new Uint8Array(WIDTH);
+            for (let y = 0; y < HEIGHT; y += 1) {
+                const row = index.subarray(y * WIDTH, (y + 1) * WIDTH);
+                const parity = (FIRST_VISIBLE_LINE + y + 1) & 1;
+                signalRows.push(this._rowSignal(row, previous, parity));
+                previous = row;
+            }
+            for (let y = 0; y < HEIGHT; y += 1) {
+                const signalRow = signalRows[y];
+                const after = signalRows[Math.min(y + 1, HEIGHT - 1)];
+                const offset = y * scale * width;
+                this._drawRow(signalRow, width, 1, target, offset);
+                for (let subRow = 1; subRow < scale; subRow += 1) {
+                    const fraction = subRow / scale;
+                    const between = this._betweenRow(signalRow, after, fraction);
+                    const dim = 1 - 0.25 * Math.pow(Math.sin(Math.PI * fraction), 2);
+                    this._drawRow(between, width, dim, target, offset + subRow * width);
+                }
+            }
+            return this._result;
+        }
+    }
+
+    class FrameClock {
+        constructor() {
+            this.reset();
+        }
+
+        reset() {
+            this.previous = null;
+            this.accumulated = 0;
+        }
+
+        step(now) {
+            if (this.previous === null) {
+                this.previous = now;
+                return 0;
+            }
+
+            const delta = Math.max(0, Math.min(now - this.previous, 100));
+            this.previous = now;
+            this.accumulated += delta / 1000 * PAL_FPS;
+            const count = Math.floor(this.accumulated);
+            this.accumulated -= count;
+            return count;
+        }
+    }
+
+    function startIntro() {
+        const canvas = document.getElementById("cracktro");
+        const ctx = canvas.getContext("2d", { alpha: false });
+        if (!ctx) {
+            throw new Error("The browser could not create a Canvas 2D context.");
+        }
+        const model = new Cracktro();
+        const filter = new PalDisplay();
+        const clock = new FrameClock();
+        let imageData = null;
+        let animationRequest = null;
+        let pageActive = true;
+
+        function draw() {
+            const { rgba, width, height } = filter.render(model.latest);
+            if (imageData === null) {
+                canvas.width = width;
+                canvas.height = height;
+                imageData = new ImageData(rgba, width, height);
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        function schedule() {
+            if (pageActive && !document.hidden && animationRequest === null) {
+                animationRequest = requestAnimationFrame(update);
+            }
+        }
+
+        function update(now) {
+            animationRequest = null;
+            if (!pageActive || document.hidden) { return; }
+            const count = clock.step(now);
+
+            for (let i = 0; i < count; i += 1) {
+                model.nextFrame();
+            }
+            if (count > 0) { draw(); }
+            schedule();
+        }
+
+        function rest() {
+            clock.reset();
+            if (animationRequest !== null) {
+                cancelAnimationFrame(animationRequest);
+                animationRequest = null;
+            }
+        }
+
+        document.addEventListener("visibilitychange", () => {
+            rest();
+            schedule();
+        });
+        window.addEventListener("pagehide", () => {
+            pageActive = false;
+            rest();
+        });
+        window.addEventListener("pageshow", () => {
+            pageActive = true;
+            rest();
+            schedule();
+        });
+
+        model.nextFrame();
+        model.nextFrame();
+        draw();
+        schedule();
+    }
+
+    startIntro();
+})();
+    </script>
+</body>
+</html>
